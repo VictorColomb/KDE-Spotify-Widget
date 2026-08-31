@@ -33,6 +33,11 @@ PlasmoidItem {
     property bool   isPlaying:   false
     property bool   hasTrack:    false
 
+    // Follow-up polling after a playback command (see sendPlaybackCommand)
+    property int    refreshBurst:       0
+    property string preCommandState:    ""
+    property int    preCommandProgress: 0
+
     // Collapse out of the panel only when everything is working and Spotify
     // simply has nothing loaded. If the widget is unconfigured or KWallet
     // failed, stay visible — otherwise there is no way to right-click it.
@@ -48,6 +53,12 @@ PlasmoidItem {
 
     function tokenIsValid() {
         return accessToken !== "" && nowSeconds() < tokenExpiresAt - 30
+    }
+
+    // Identity of what is on screen, used to tell whether a playback command
+    // has actually taken effect yet.
+    function playbackState() {
+        return trackName + "|" + isPlaying
     }
 
     function formatTime(ms) {
@@ -190,14 +201,21 @@ PlasmoidItem {
             var xhr = new XMLHttpRequest()
             xhr.open(method, "https://api.spotify.com/v1/me/player/" + endpoint)
             xhr.setRequestHeader("Authorization", "Bearer " + accessToken)
+            xhr.onreadystatechange = function() {
+                if (xhr.readyState !== XMLHttpRequest.DONE) return
+                // Spotify's player state lags the command, so a single re-poll
+                // often still returns the previous track. Re-check a few times
+                // and stop as soon as the state actually moves.
+                root.preCommandState    = root.playbackState()
+                root.preCommandProgress = root.progressMs
+                root.refreshBurst       = 6
+            }
             if (body !== null) {
                 xhr.setRequestHeader("Content-Type", "application/json")
                 xhr.send(JSON.stringify(body))
             } else {
                 xhr.send()
             }
-            // Refresh state after a short delay to reflect new playback
-            refreshDelay.restart()
         })
     }
 
@@ -233,12 +251,28 @@ PlasmoidItem {
         }
     }
 
-    // Short delay after a playback command before refreshing state
+    // After a playback command, re-poll every 350ms until the reported state
+    // differs from what it was when the command landed, or the burst runs out
+    // (~2s). Bounded, so a failed command cannot leave this spinning.
     Timer {
         id: refreshDelay
-        interval: 600
-        repeat:   false
-        onTriggered: root.fetchCurrentlyPlaying()
+        interval: 350
+        repeat:   true
+        running:  root.refreshBurst > 0
+        onTriggered: {
+            // Track name is not a unique identity: repeat-one, a duplicate in a
+            // playlist, or an album reprise all skip to a same-titled track and
+            // look unchanged. Progress resetting is the only signal there. The
+            // 2s slack absorbs drift between the local tick and the server.
+            var jumped = root.progressMs < root.preCommandProgress - 2000
+
+            if (root.playbackState() !== root.preCommandState || jumped) {
+                root.refreshBurst = 0   // state moved; the regular poll takes over
+                return
+            }
+            root.refreshBurst--
+            root.fetchCurrentlyPlaying()
+        }
     }
 
     // ── Compact representation (panel) ───────────────────────────────────────
