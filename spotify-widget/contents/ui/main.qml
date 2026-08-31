@@ -306,6 +306,9 @@ PlasmoidItem {
         Layout.preferredWidth: root.idle ? 0 : fullWidth
         Layout.maximumWidth:   root.idle ? 0 : fullWidth
         visible: !root.idle
+        clip:    true   // children are fixed-size, not width-bound, so they'd
+                         // paint over neighbors while the panel animates the
+                         // slot width during the idle/active transition
 
         hoverEnabled: true
         onClicked: root.expanded = !root.expanded
