@@ -5,20 +5,32 @@ Uses only Python 3 stdlib — no pip installs needed.
 
 Prerequisites:
   1. Create a Spotify app at https://developer.spotify.com/dashboard
-  2. Add "http://localhost:8888/callback" as a Redirect URI in app settings
+  2. Add "http://127.0.0.1:8888/callback" as a Redirect URI in app settings
   3. Note down your Client ID and Client Secret
 
 Usage:
   python3 setup_auth.py
+  python3 setup_auth.py --selftest    # run the callback-parsing asserts
 
-The script will open a browser, handle the OAuth callback, and print
-your refresh token. Paste it into the widget's Configure dialog.
+The script opens a browser, handles the OAuth callback, and stores the
+client secret and refresh token in KWallet. Only the Client ID — which is
+not a secret — gets pasted into the widget's Configure dialog.
+
+Note on the client secret: it is deliberately used. Spotify rotates refresh
+tokens on every renewal under pure PKCE, which would force the widget to
+write back to KWallet on a schedule. QML can only reach kwallet-query
+through a shell, and writing there would expose the token in the process
+list. Authenticating with the secret keeps the refresh token stable, so the
+widget only ever reads. Both values live in KWallet, never on disk in plain
+text.
 """
 
 import hashlib
 import base64
 import secrets
 import json
+import shutil
+import subprocess
 import urllib.parse
 import urllib.request
 import webbrowser
@@ -26,33 +38,51 @@ import sys
 from http.server import HTTPServer, BaseHTTPRequestHandler
 from threading import Thread
 
-REDIRECT_URI = "http://localhost:8888/callback"
+REDIRECT_URI = "http://127.0.0.1:8888/callback"
 AUTH_URL     = "https://accounts.spotify.com/authorize"
 TOKEN_URL    = "https://accounts.spotify.com/api/token"
+WALLET       = "kdewallet"
+WALLET_FOLDER = "Spotify Widget"
 SCOPES       = (
     "user-read-currently-playing "
     "user-read-playback-state "
-    "user-modify-playback-state "
-    "playlist-read-private "
-    "playlist-read-collaborative"
+    "user-modify-playback-state"
 )
 
 _callback_result = {"code": None, "error": None}
+_expected_state = None
+
+
+def _parse_callback(query, expected_state):
+    """Return (code, error) for an OAuth callback query string.
+
+    The state check is what stops a local process or a web page you happen to
+    be visiting from feeding its own authorization code to our listener.
+    """
+    params = urllib.parse.parse_qs(query)
+    state = params.get("state", [None])[0]
+
+    if state != expected_state:
+        return None, "state mismatch — callback rejected (possible CSRF, or a stray request)"
+    if "error" in params:
+        return None, params["error"][0]
+    if "code" in params:
+        return params["code"][0], None
+    return None, "callback had neither code nor error"
 
 
 class _CallbackHandler(BaseHTTPRequestHandler):
     def do_GET(self):
         parsed = urllib.parse.urlparse(self.path)
-        params = urllib.parse.parse_qs(parsed.query)
+        code, error = _parse_callback(parsed.query, _expected_state)
 
-        if "code" in params:
-            _callback_result["code"] = params["code"][0]
+        _callback_result["code"]  = code
+        _callback_result["error"] = error
+
+        if code:
             body = b"<html><body><h2>Authorization successful!</h2><p>You can close this tab.</p></body></html>"
-        elif "error" in params:
-            _callback_result["error"] = params["error"][0]
-            body = b"<html><body><h2>Authorization failed.</h2><p>Check the terminal for details.</p></body></html>"
         else:
-            body = b"<html><body><h2>Unexpected callback.</h2></body></html>"
+            body = b"<html><body><h2>Authorization failed.</h2><p>Check the terminal for details.</p></body></html>"
 
         self.send_response(200)
         self.send_header("Content-Type", "text/html; charset=utf-8")
@@ -62,6 +92,34 @@ class _CallbackHandler(BaseHTTPRequestHandler):
 
     def log_message(self, format, *args):
         pass  # suppress access log noise
+
+
+def _wallet_read(key):
+    """Return the stored value, or None. kwallet-query reports failure only
+    through its exit code — it prints error text on stdout, not stderr."""
+    proc = subprocess.run(
+        ["kwallet-query", "-f", WALLET_FOLDER, "-r", key, WALLET],
+        capture_output=True,
+    )
+    if proc.returncode != 0:
+        return None
+    return proc.stdout.decode().strip()
+
+
+def _wallet_write(key, value):
+    """Store value under key, then read it back to prove it landed."""
+    proc = subprocess.run(
+        ["kwallet-query", "-f", WALLET_FOLDER, "-w", key, WALLET],
+        input=value.encode(),          # via stdin: never appears in the process list
+        capture_output=True,
+    )
+    if proc.returncode != 0:
+        raise RuntimeError(
+            f"kwallet-query failed writing '{key}' (exit {proc.returncode}): "
+            f"{proc.stdout.decode().strip()} {proc.stderr.decode().strip()}".strip()
+        )
+    if _wallet_read(key) != value:
+        raise RuntimeError(f"wrote '{key}' to KWallet but read back a different value")
 
 
 def _pkce_pair():
@@ -117,6 +175,12 @@ def main():
     print("as a Redirect URI in your Spotify Developer Dashboard app.")
     print()
 
+    # Fail before sending the user through a browser dance we can't store the
+    # result of. No fallback to a config file — KWallet or nothing.
+    if not shutil.which("kwallet-query"):
+        print("Error: kwallet-query not found. Install the 'kf6-kwallet' package.")
+        sys.exit(1)
+
     client_id     = input("Enter your Spotify Client ID:     ").strip()
     client_secret = input("Enter your Spotify Client Secret: ").strip()
 
@@ -124,12 +188,15 @@ def main():
         print("\nError: Client ID and Client Secret are required.")
         sys.exit(1)
 
+    global _expected_state
     code_verifier, code_challenge = _pkce_pair()
-    state    = secrets.token_urlsafe(16)
-    auth_url = _build_auth_url(client_id, state, code_challenge)
+    _expected_state = secrets.token_urlsafe(16)
+    auth_url = _build_auth_url(client_id, _expected_state, code_challenge)
 
-    # Start callback server in a background thread (handles one request)
-    server = HTTPServer(("localhost", 8888), _CallbackHandler)
+    # Start callback server in a background thread (handles one request).
+    # Bound to the loopback address literally, matching REDIRECT_URI — "localhost"
+    # can resolve to ::1, which would not match the URI Spotify redirects to.
+    server = HTTPServer(("127.0.0.1", 8888), _CallbackHandler)
     thread = Thread(target=server.handle_request, daemon=True)
     thread.start()
 
@@ -143,7 +210,8 @@ def main():
     thread.join(timeout=120)
 
     if _callback_result["error"]:
-        print(f"\nSpotify returned an error: {_callback_result['error']}")
+        print(f"\nAuthorization failed: {_callback_result['error']}")
+        print("Re-run this script to try again.")
         sys.exit(1)
 
     if not _callback_result["code"]:
@@ -165,17 +233,41 @@ def main():
         print("Full response:", json.dumps(tokens, indent=2))
         sys.exit(1)
 
+    print(f"Storing secrets in KWallet ({WALLET} → {WALLET_FOLDER})...")
+    try:
+        _wallet_write("clientSecret", client_secret)
+        _wallet_write("refreshToken", refresh_token)
+    except RuntimeError as e:
+        print(f"\nError: {e}")
+        print("Nothing was saved. Is KWallet running and unlocked?")
+        sys.exit(1)
+
     print()
     print("=" * 60)
-    print("  SUCCESS! Copy the values below into the widget config.")
-    print("  (Right-click widget → Configure)")
+    print("  SUCCESS! Secrets are in KWallet.")
     print("=" * 60)
     print()
-    print(f"  Client ID:     {client_id}")
-    print(f"  Client Secret: {client_secret}")
-    print(f"  Refresh Token: {refresh_token}")
+    print("  Paste this into the widget config (right-click → Configure):")
     print()
+    print(f"    Client ID: {client_id}")
+    print()
+    print("  The client secret and refresh token were NOT printed — they")
+    print("  went straight into KWallet. Manage them with kwalletmanager5.")
+    print()
+
+
+def _selftest():
+    good = "code=abc&state=s1"
+    assert _parse_callback(good, "s1")        == ("abc", None)
+    assert _parse_callback(good, "other")[0]  is None      # forged code rejected
+    assert _parse_callback("code=abc", "s1")[0] is None    # no state at all
+    assert _parse_callback("error=access_denied&state=s1", "s1") == (None, "access_denied")
+    assert _parse_callback("state=s1", "s1")[0] is None    # neither code nor error
+    print("selftest ok")
 
 
 if __name__ == "__main__":
-    main()
+    if "--selftest" in sys.argv:
+        _selftest()
+    else:
+        main()

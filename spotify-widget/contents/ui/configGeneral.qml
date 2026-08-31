@@ -7,9 +7,7 @@ ColumnLayout {
     id: generalConfigPage
 
     // cfg_ properties are automatically synced with main.xml config keys
-    property alias cfg_clientId:     clientIdField.text
-    property alias cfg_clientSecret: clientSecretField.text
-    property alias cfg_refreshToken: refreshTokenField.text
+    property alias cfg_clientId: clientIdField.text
 
     spacing: Kirigami.Units.smallSpacing
 
@@ -23,28 +21,15 @@ ColumnLayout {
             placeholderText: "Paste your Spotify Client ID here"
         }
 
-        QQC2.TextField {
-            id: clientSecretField
-            Kirigami.FormData.label: "Client Secret:"
-            Layout.fillWidth: true
-            placeholderText: "Paste your Spotify Client Secret here"
-            echoMode: TextInput.Password
-        }
-
-        QQC2.TextField {
-            id: refreshTokenField
-            Kirigami.FormData.label: "Refresh Token:"
-            Layout.fillWidth: true
-            placeholderText: "Run setup_auth.py, then paste token here"
-        }
     }
 
     Kirigami.InlineMessage {
         Layout.fillWidth: true
         type: Kirigami.MessageType.Information
         visible: true
-        text: "Run <b>python3 setup_auth.py</b> in a terminal to get your refresh token. " +
-              "Make sure to add <b>http://localhost:8888/callback</b> as a Redirect URI " +
-              "in your Spotify Developer Dashboard app settings first."
+        text: "Run <b>python3 setup_auth.py</b> in a terminal first — it stores your " +
+              "client secret and refresh token in <b>KWallet</b> and prints the Client ID " +
+              "to paste above. Add <b>http://127.0.0.1:8888/callback</b> as a Redirect URI " +
+              "in your Spotify Developer Dashboard app settings before running it."
     }
 }
