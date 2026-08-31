@@ -1,3 +1,7 @@
+// Lets the compact/full representations reference `root` by id — without it
+// every such access is an unqualified-lookup warning.
+pragma ComponentBehavior: Bound
+
 import QtQuick
 import QtQuick.Controls as QQC2
 import QtQuick.Layouts
