@@ -2,16 +2,23 @@ import QtQuick
 import QtQuick.Controls as QQC2
 import QtQuick.Layouts
 import org.kde.plasma.plasmoid
-import org.kde.plasma.components as PlasmaComponents
 import org.kde.kirigami as Kirigami
+import org.kde.plasma.core as PlasmaCore
+import org.kde.plasma.plasma5support as Plasma5Support
 
 PlasmoidItem {
     id: root
 
-    // ── Config shortcuts ────────────────────────────────────────────────────
-    readonly property string clientId:     Plasmoid.configuration.clientId
-    readonly property string clientSecret: Plasmoid.configuration.clientSecret
-    readonly property string refreshToken: Plasmoid.configuration.refreshToken
+    // ── Config ──────────────────────────────────────────────────────────────
+    // Only the Client ID lives in the plasmoid config — it identifies the app
+    // but grants nothing. The secret and refresh token come from KWallet.
+    readonly property string clientId: Plasmoid.configuration.clientId
+
+    // ── Credentials from KWallet ────────────────────────────────────────────
+    property string clientSecret: ""
+    property string refreshToken: ""
+    property string walletError:  ""
+    readonly property bool credentialsReady: clientSecret !== "" && refreshToken !== ""
 
     // ── OAuth state ─────────────────────────────────────────────────────────
     property string accessToken:    ""
@@ -24,10 +31,15 @@ PlasmoidItem {
     property int    progressMs:  0
     property int    durationMs:  1
     property bool   isPlaying:   false
+    property bool   hasTrack:    false
 
-    // ── Playlist state ──────────────────────────────────────────────────────
-    property var playlists:            []   // [{id, name}, ...]
-    property int selectedPlaylistIndex: -1
+    // Collapse out of the panel only when everything is working and Spotify
+    // simply has nothing loaded. If the widget is unconfigured or KWallet
+    // failed, stay visible — otherwise there is no way to right-click it.
+    readonly property bool idle: credentialsReady && walletError === "" && !hasTrack
+
+    Plasmoid.status: idle ? PlasmaCore.Types.HiddenStatus
+                          : PlasmaCore.Types.ActiveStatus
 
     // ── Helpers ─────────────────────────────────────────────────────────────
     function nowSeconds() {
@@ -43,9 +55,56 @@ PlasmoidItem {
         return Math.floor(s / 60) + ":" + ("0" + (s % 60)).slice(-2)
     }
 
+    // ── KWallet ─────────────────────────────────────────────────────────────
+    // There is no QML binding for KWallet, so we shell out to kwallet-query.
+    // Reads only: the value comes back on stdout and never touches a command
+    // line. Nothing is ever written from here, and there is no config-file
+    // fallback — if the wallet is locked or missing, the widget stays dark.
+    readonly property string walletName:   "kdewallet"
+    readonly property string walletFolder: "Spotify Widget"
+
+    function walletReadCmd(key) {
+        return "kwallet-query -f '" + walletFolder + "' -r " + key + " " + walletName
+    }
+
+    Plasma5Support.DataSource {
+        id: wallet
+        engine: "executable"
+        connectedSources: []
+
+        onNewData: function(source, data) {
+            disconnectSource(source)   // one-shot; the engine caches otherwise
+
+            // kwallet-query prints its errors on stdout and signals failure
+            // only through the exit code, so never trust stdout on its own.
+            var code   = data["exit code"]
+            var value  = (data["stdout"] || "").trim()
+            var isSecret = (source === root.walletReadCmd("clientSecret"))
+            var keyName  = isSecret ? "clientSecret" : "refreshToken"
+
+            if (code !== 0 || value === "") {
+                root.walletError = "Could not read " + keyName + " from KWallet"
+                                 + " (exit " + code + "). Is the wallet unlocked?"
+                console.error("Spotify Widget:", root.walletError, value)
+                return
+            }
+
+            if (isSecret) root.clientSecret = value
+            else          root.refreshToken = value
+        }
+    }
+
+    function loadCredentials() {
+        walletError  = ""
+        clientSecret = ""
+        refreshToken = ""
+        wallet.connectSource(walletReadCmd("clientSecret"))
+        wallet.connectSource(walletReadCmd("refreshToken"))
+    }
+
     // ── Token management ────────────────────────────────────────────────────
     function refreshAccessToken(callback) {
-        if (!clientId || !clientSecret || !refreshToken) {
+        if (!clientId || !credentialsReady) {
             console.warn("Spotify Widget: credentials not configured")
             return
         }
@@ -59,6 +118,14 @@ PlasmoidItem {
                 var data = JSON.parse(xhr.responseText)
                 accessToken    = data.access_token
                 tokenExpiresAt = nowSeconds() + data.expires_in
+                // Secret-authenticated refresh keeps the token stable, which is
+                // why we can stay read-only. If Spotify ever rotates it anyway,
+                // say so loudly rather than silently expiring days later.
+                if (data.refresh_token && data.refresh_token !== refreshToken) {
+                    walletError = "Spotify rotated the refresh token. "
+                                + "Re-run setup_auth.py to store the new one."
+                    console.warn("Spotify Widget:", walletError)
+                }
                 if (callback) callback()
             } else {
                 console.error("Spotify Widget: token refresh failed", xhr.status, xhr.responseText)
@@ -95,6 +162,7 @@ PlasmoidItem {
                         progressMs = data.progress_ms || 0
                         durationMs = data.item.duration_ms || 1
                         isPlaying  = data.is_playing
+                        hasTrack   = true
                         var imgs = data.item.album && data.item.album.images
                         if (imgs && imgs.length > 0) {
                             // Prefer medium image (~300px) when available
@@ -106,6 +174,7 @@ PlasmoidItem {
                     trackName   = "Not playing"
                     artistName  = ""
                     isPlaying   = false
+                    hasTrack    = false
                     albumArtUrl = ""
                 } else if (xhr.status === 401) {
                     // Token expired mid-poll — clear so next cycle forces refresh
@@ -132,37 +201,17 @@ PlasmoidItem {
         })
     }
 
-    function fetchPlaylists() {
-        withToken(function() {
-            var xhr = new XMLHttpRequest()
-            xhr.open("GET", "https://api.spotify.com/v1/me/playlists?limit=50")
-            xhr.setRequestHeader("Authorization", "Bearer " + accessToken)
-            xhr.onreadystatechange = function() {
-                if (xhr.readyState !== XMLHttpRequest.DONE) return
-                if (xhr.status === 200) {
-                    var data = JSON.parse(xhr.responseText)
-                    var list = []
-                    for (var i = 0; i < data.items.length; i++) {
-                        list.push({ id: data.items[i].id, name: data.items[i].name })
-                    }
-                    playlists = list
-                }
-            }
-            xhr.send()
-        })
-    }
-
-    function playPlaylist(playlistId) {
-        sendPlaybackCommand("PUT", "play", { context_uri: "spotify:playlist:" + playlistId })
-    }
-
     // ── Timers ───────────────────────────────────────────────────────────────
 
-    // Poll currently-playing every 2 seconds
+    // Poll currently-playing. The progress bar ticks locally, so polling only
+    // needs to catch changes made elsewhere (phone, other device) — rare enough
+    // that hammering the API every 2s buys nothing.
     Timer {
         id: pollTimer
-        interval: 2000
-        running:  root.refreshToken !== ""
+        interval: !root.isPlaying   ? 30000   // paused/idle: nothing to track
+                : root.expanded     ? 5000    // popup open: someone is watching
+                                    : 15000   // playing, collapsed
+        running:  root.credentialsReady
         repeat:   true
         triggeredOnStart: true
         onTriggered: root.fetchCurrentlyPlaying()
@@ -176,6 +225,10 @@ PlasmoidItem {
         onTriggered: {
             if (root.progressMs + 1000 <= root.durationMs) {
                 root.progressMs += 1000
+            } else {
+                // Track just ended — the next one started, so poll now instead
+                // of waiting out the interval.
+                root.fetchCurrentlyPlaying()
             }
         }
     }
@@ -189,19 +242,88 @@ PlasmoidItem {
     }
 
     // ── Compact representation (panel) ───────────────────────────────────────
-    compactRepresentation: RowLayout {
-        spacing: 4
+    // Album art with a progress underline, then bold track over dimmed artist.
+    compactRepresentation: MouseArea {
+        id: compactRoot
 
-        Kirigami.Icon {
-            source: root.isPlaying ? "media-playback-start" : "media-playback-pause"
-            width:  Kirigami.Units.iconSizes.small
-            height: Kirigami.Units.iconSizes.small
+        readonly property int gap: Kirigami.Units.smallSpacing
+
+        // Full panel thickness — the panel already insets its contents.
+        readonly property int artSize: Math.max(16, height)
+
+        // Widest the text column may get before eliding.
+        readonly property int maxTextWidth: 190
+
+        // Driven by the labels' *natural* widths, which do not depend on the
+        // width they are given — so this cannot feed back into itself the way
+        // a fillWidth-inside-implicitWidth layout does.
+        readonly property int textWidth: Math.min(maxTextWidth,
+                                                  Math.ceil(Math.max(trackLabel.implicitWidth,
+                                                                     artistLabel.implicitWidth)))
+        readonly property int fullWidth: artSize + gap + textWidth + gap
+
+        // Zero-width when idle: Plasmoid.status alone only hides system-tray
+        // items, so a panel applet has to collapse itself.
+        Layout.minimumWidth:   root.idle ? 0 : fullWidth
+        Layout.preferredWidth: root.idle ? 0 : fullWidth
+        Layout.maximumWidth:   root.idle ? 0 : fullWidth
+        visible: !root.idle
+
+        hoverEnabled: true
+        onClicked: root.expanded = !root.expanded
+
+        // -- Album art + progress underline --
+        Item {
+            id: artHolder
+            anchors.left:           parent.left
+            anchors.verticalCenter: parent.verticalCenter
+            width:  compactRoot.artSize
+            height: compactRoot.artSize
+
+            Image {
+                anchors.fill: parent
+                source:       root.albumArtUrl
+                fillMode:     Image.PreserveAspectCrop
+                visible:      root.albumArtUrl !== ""
+                asynchronous: true
+            }
+
+            Kirigami.Icon {
+                anchors.fill: parent
+                source:  "media-optical-audio"
+                opacity: 0.5
+                visible: root.albumArtUrl === ""
+            }
         }
-        QQC2.Label {
-            text: root.trackName
-            elide: Text.ElideRight
-            Layout.maximumWidth: 160
-            font.pointSize: Kirigami.Theme.defaultFont.pointSize * 0.85
+
+        // -- Track over artist --
+        Column {
+            anchors.left:           artHolder.right
+            anchors.leftMargin:     compactRoot.gap
+            anchors.verticalCenter: parent.verticalCenter
+            width:   compactRoot.textWidth
+            spacing: 0
+
+            QQC2.Label {
+                id: trackLabel
+                width:     parent.width
+                text:      root.trackName
+                font.bold: true
+                font.pointSize: Kirigami.Theme.defaultFont.pointSize * 0.85
+                elide:     Text.ElideRight
+                maximumLineCount: 1
+            }
+
+            QQC2.Label {
+                id: artistLabel
+                width:     parent.width
+                text:      root.artistName
+                opacity:   0.7
+                font.pointSize: Kirigami.Theme.defaultFont.pointSize * 0.75
+                elide:     Text.ElideRight
+                maximumLineCount: 1
+                visible:   text !== ""
+            }
         }
     }
 
@@ -209,22 +331,42 @@ PlasmoidItem {
     fullRepresentation: ColumnLayout {
         id: fullView
 
-        width:   300
+        // Cover size doubles as the width for the progress bar and timestamps.
+        readonly property int artSize: 280
+        readonly property int margin: Kirigami.Units.largeSpacing
+        readonly property int popupWidth: artSize + 2 * margin
+
+        // Plasma sizes the popup from these, not from `width` — without them it
+        // falls back to a ~25 grid-unit default, far wider than the content.
+        Layout.minimumWidth:    popupWidth
+        Layout.preferredWidth:  popupWidth
+        Layout.maximumWidth:    popupWidth
+        Layout.preferredHeight: implicitHeight
+
         spacing: Kirigami.Units.smallSpacing
+
+        // -- KWallet failure: hard stop, there is no fallback --
+        Kirigami.InlineMessage {
+            Layout.fillWidth: true
+            type:    Kirigami.MessageType.Error
+            visible: root.walletError !== ""
+            text:    root.walletError
+        }
 
         // -- Unconfigured notice --
         Kirigami.InlineMessage {
             Layout.fillWidth: true
             type:    Kirigami.MessageType.Warning
-            visible: root.refreshToken === ""
-            text:    "Right-click → Configure to add your Spotify credentials."
+            visible: root.walletError === "" && !root.credentialsReady
+            text:    "Run <b>setup_auth.py</b>, then right-click → Configure to add your Client ID."
         }
 
         // -- Album art --
         Item {
-            Layout.alignment: Qt.AlignHCenter
-            width:  280
-            height: 280
+            Layout.alignment:       Qt.AlignHCenter
+            Layout.topMargin:       fullView.margin
+            Layout.preferredWidth:  fullView.artSize
+            Layout.preferredHeight: fullView.artSize
 
             Image {
                 id: albumArt
@@ -271,16 +413,21 @@ PlasmoidItem {
             elide:               Text.ElideRight
         }
 
-        // -- Progress bar + timestamps --
+        // -- Progress bar + timestamps, matched to the cover width --
         QQC2.ProgressBar {
-            from:             0
-            to:               root.durationMs
-            value:            root.progressMs
-            Layout.fillWidth: true
+            from:                  0
+            to:                    root.durationMs
+            value:                 root.progressMs
+            Layout.alignment:      Qt.AlignHCenter
+            Layout.preferredWidth: fullView.artSize
         }
 
         RowLayout {
-            Layout.fillWidth: true
+            // A nested layout defaults to fillWidth: true, which would stretch
+            // this to the popup width and ignore the alignment below.
+            Layout.fillWidth:      false
+            Layout.alignment:      Qt.AlignHCenter
+            Layout.preferredWidth: fullView.artSize
 
             QQC2.Label {
                 text:      root.formatTime(root.progressMs)
@@ -321,62 +468,24 @@ PlasmoidItem {
             }
         }
 
-        // -- Divider --
-        Kirigami.Separator { Layout.fillWidth: true }
-
-        // -- Playlist selector --
-        RowLayout {
-            Layout.fillWidth: true
-
-            QQC2.Label {
-                text:      "Playlist:"
-                font.bold: true
-            }
-
-            QQC2.ComboBox {
-                id:          playlistCombo
-                Layout.fillWidth: true
-                model:       root.playlists.map(function(p) { return p.name })
-                enabled:     root.playlists.length > 0
-                displayText: root.playlists.length > 0
-                             ? playlistCombo.currentText
-                             : "Loading..."
-                onActivated: function(index) {
-                    root.selectedPlaylistIndex = index
-                    root.playPlaylist(root.playlists[index].id)
-                }
-            }
-
-            QQC2.ToolButton {
-                icon.name: "view-refresh"
-                ToolTip.text: "Refresh playlists"
-                ToolTip.visible: hovered
-                onClicked: root.fetchPlaylists()
-            }
-        }
-
-        Item { height: Kirigami.Units.smallSpacing }
+        Item { Layout.preferredHeight: fullView.margin }
     }
 
-    // Initial setup: fetch token + playlists once credentials are available
-    Component.onCompleted: {
-        if (root.refreshToken !== "") {
-            root.withToken(function() {
-                root.fetchPlaylists()
-            })
+    // Both wallet reads land asynchronously; start once we have the pair.
+    onCredentialsReadyChanged: {
+        if (credentialsReady) {
+            accessToken = ""
+            withToken(function() { root.fetchCurrentlyPlaying() })
         }
     }
 
-    // Re-initialize when credentials change in config
+    Component.onCompleted: root.loadCredentials()
+
+    // Re-read the wallet when the Client ID changes (i.e. after setup)
     Connections {
         target: Plasmoid.configuration
-        function onRefreshTokenChanged() {
-            if (root.refreshToken !== "") {
-                root.accessToken = ""
-                root.withToken(function() {
-                    root.fetchPlaylists()
-                })
-            }
+        function onClientIdChanged() {
+            root.loadCredentials()
         }
     }
 }

@@ -7,7 +7,7 @@
             }
         ],
         "Category": "Multimedia",
-        "Description": "Spotify miniplayer — shows currently playing track, controls, and playlist selector",
+        "Description": "Spotify miniplayer — shows the currently playing track with playback controls",
         "Icon": "media-playback-start",
         "Id": "org.kde.plasma.spotifywidget",
         "Name": "Spotify Widget",
