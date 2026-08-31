@@ -4,6 +4,8 @@ A KDE Plasma 6 desktop widget that acts as a Spotify miniplayer — shows the
 currently playing track, album art, and playback controls, without needing the
 Spotify desktop app open.
 
+<img width="450" alt src="https://github.com/user-attachments/assets/457e7825-bbc6-48f6-a18b-51d529953700" />
+
 ## Features
 
 - Album art, track name, and artist display
