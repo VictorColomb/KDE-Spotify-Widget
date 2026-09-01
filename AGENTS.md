@@ -21,7 +21,7 @@ failure, so they chain with `&&`.
 ```bash
 python3 -m py_compile setup_auth.py                        # Python syntax (same parse as ast.parse)
 python3 setup_auth.py --selftest                           # callback-parsing asserts
-qmllint-qt6 spotify-widget/contents/ui/main.qml            # and any other .qml you edited
+./qmllint.sh spotify-widget/contents/ui/main.qml           # and any other .qml you edited
 ```
 
 Notes:
@@ -29,10 +29,11 @@ Notes:
 - `py_compile` is the no-shell-quoting form of an `ast.parse` check; its
   bytecode lands in the gitignored `__pycache__/`. There is no formatter or
   linter for the Python — syntax and the selftest are the whole bar.
-- `qmllint-qt6` (Fedora: `qt6-qtdeclarative-devel`) is the only QML check; there
-  is no build step, so a typo otherwise surfaces as a silently blank widget. It
-  exits non-zero on real errors and 0 on warnings, so **read the output**, not
-  just the status. The baseline is clean — any warning is yours.
+- `qmllint.sh` wraps Qt6's `qmllint`, whose binary name differs by distro. Never
+  call plain `qmllint` directly. It is the only QML check there is; there is no
+  build step, so a typo otherwise surfaces as a silently blank widget. It exits
+  non-zero on real errors and 0 on warnings, so **read the output**, not just
+  the status. The baseline is clean — any warning is yours.
 
 ## Architecture
 

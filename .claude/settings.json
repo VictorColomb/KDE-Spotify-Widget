@@ -1,0 +1,9 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(./qmllint.sh *)",
+      "Bash(python3 -m py_compile *)",
+      "Bash(python3 self_auth.py --selftest)"
+    ]
+  }
+}
