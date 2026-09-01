@@ -24,7 +24,14 @@ Spotify desktop app open.
 - KDE Plasma 6
 - Python 3 (stdlib only — no pip installs needed) for the one-time setup
 - KWallet, running and unlocked — `kwallet-query` must be on `PATH` (Fedora:
-  `kf6-kwallet`).
+  `kf6-kwallet`; Arch: `kwallet`).
+- A C++ toolchain and the KWallet headers, to build the widget's wallet plugin:
+  - Fedora:
+    `cmake extra-cmake-modules gcc-c++ kf6-kwallet-devel kf6-kpackage-devel kf6-kcoreaddons-devel qt6-qtdeclarative-devel`
+  - Arch:
+    `cmake extra-cmake-modules base-devel kwallet kpackage qt6-declarative`
+  - Debian/Ubuntu:
+    `cmake extra-cmake-modules build-essential libkf6wallet-dev libkf6package-dev qt6-declarative-dev`
 - A [Spotify Developer app](https://developer.spotify.com/dashboard) (free to
   create)
 
@@ -42,7 +49,8 @@ Spotify desktop app open.
    ```
    http://127.0.0.1:8888/callback
    ```
-4. Save and note your **Client ID** and **Client Secret**
+4. Save and note your **Client ID**. There is no need for the Client Secret —
+   the widget authenticates with PKCE.
 
 ### Step 2 — Authorize and Store Credentials
 
@@ -54,34 +62,49 @@ python3 setup_auth.py
 
 It will:
 
-1. Ask for your Client ID and Client Secret
+1. Ask for your Client ID
 2. Open a browser to the Spotify login/authorization page
 3. Catch the callback automatically on `127.0.0.1` (verifying the OAuth `state`)
-4. Store the **client secret** and **refresh token** in KWallet, then read them
-   back to confirm the write landed
+4. Store the **refresh token** in KWallet, then read it back to confirm the
+   write landed
 
-The two secrets are never printed and never written to a config file — they go
-straight into KWallet, under wallet `kdewallet`, folder **Spotify Widget**. You
-can inspect or remove them with `kwalletmanager5`. Only the Client ID, which is
-not a secret, is echoed for you to paste into the widget.
+The token is never printed and never written to a config file — it goes straight
+into KWallet, folder **Spotify Widget**, in whichever wallet KWallet reports as
+your local one (usually `kdewallet`; the widget's Configure dialog names it).
+You can inspect or remove it with `kwalletmanager5`. Only the Client ID, which
+is not a secret, is echoed for you to paste into the widget.
 
-### Step 3 — Install the Widget
+From then on the widget maintains the token itself: Spotify issues a fresh
+refresh token on renewal and the widget writes each one back to KWallet, so you
+should not need to run this script again.
+
+### Step 3 — Build and Install
+
+The widget talks to KWallet through a small C++ QML plugin, so there is one
+build step. From the repo root:
 
 ```bash
-kpackagetool6 --type Plasma/Applet --install spotify-widget/
+cmake -B build
+cmake --build build
+sudo cmake --install build
 ```
 
-To update an existing installation:
+This installs both the wallet plugin and the widget itself, system-wide.
 
-```bash
-kpackagetool6 --type Plasma/Applet --upgrade spotify-widget/
-```
+`cmake -B build` prints the prefix it chose. Leave it alone unless you have a
+reason not to: Qt only looks for QML modules under its own prefix, so the CMake
+default of `/usr/local` would install a plugin the widget can never load, and
+the configure step defaults to Qt's prefix to avoid exactly that. If you do pass
+`-DCMAKE_INSTALL_PREFIX=...`, CMake will warn you when the result won't be
+found.
 
 Then restart Plasma if the widget doesn't appear immediately:
 
 ```bash
 plasmashell --replace &
 ```
+
+To update after pulling changes, re-run the same three commands.
 
 ### Step 4 — Add and Configure the Widget
 
@@ -91,9 +114,9 @@ plasmashell --replace &
 4. In the **General** tab, fill in **Client ID** — that's the only field
 5. Click **OK**
 
-The widget reads the secret and refresh token from KWallet on startup. If the
-wallet is locked, missing, or doesn't contain the entries, it shows an error and
-does nothing — by design, there is no fallback to plaintext storage.
+The widget reads the refresh token from KWallet on startup. If the wallet is
+locked, missing, or doesn't contain the entry, it shows an error and does
+nothing — by design, there is no fallback to plaintext storage.
 
 The widget will start showing your currently playing track within a couple of
 seconds.
@@ -122,9 +145,20 @@ ends.
 
 ## Uninstall
 
+Remove the widget from your panel or desktop first, then delete what was
+installed:
+
 ```bash
-kpackagetool6 --type Plasma/Applet --remove org.kde.plasma.spotifywidget
+sudo rm -rf /usr/share/plasma/plasmoids/org.kde.plasma.spotifywidget
+sudo rm -rf /usr/lib/qt6/qml/org/kde/private/spotifywidget
 ```
+
+Those are the paths for the default prefix; adjust them if you installed
+elsewhere. Note the second one ends at `spotifywidget` — `org/kde/private/`
+itself holds other KDE modules.
+
+Finally, remove the stored token in `kwalletmanager5` (folder **Spotify
+Widget**).
 
 ---
 
@@ -146,19 +180,35 @@ kpackagetool6 --type Plasma/Applet --remove org.kde.plasma.spotifywidget
 
 - You haven't entered your Client ID yet — right-click → Configure
 
-**"Could not read ... from KWallet" error**
+**"KWallet has no ..." error**
 
 - Make sure KWallet is running and unlocked (`kwalletmanager5`)
-- Confirm the entries exist:
-  `kwallet-query -f 'Spotify Widget' -r refreshToken kdewallet`
-- If the folder doesn't exist, re-run `python3 setup_auth.py`
+- The message names the exact wallet and folder it looked in; confirm the entry
+  exists with
+  `kwallet-query -f 'Spotify Widget' -r refreshToken <that wallet name>`
+- If it doesn't, re-run `python3 setup_auth.py`
 - This is intentional: the widget has no plaintext fallback and stays dark on
   failure
 
+**The widget is blank, or nothing happens at all**
+
+- The QML plugin probably isn't where Qt looks for it. Re-run `cmake -B build`
+  and read the prefix it reports, then
+  `cmake --build build && sudo cmake --install build`
+- `journalctl --user -t plasmashell -f` will show the import failure
+
+**Upgrading from a version that used a Client Secret**
+
+- Re-run `python3 setup_auth.py`. A token issued under the old secret-based flow
+  can't be refreshed with PKCE, so it has to be reissued.
+- Your old `clientSecret` entry stays in the wallet, unused and ignored by the
+  widget. Delete it in `kwalletmanager5` (folder **Spotify Widget**) whenever
+  you like.
+
 **Token expires / widget stops updating**
 
-- The widget handles token refresh automatically; if it stops, right-click →
-  Configure and re-paste your refresh token, then click OK to reinitialize
+- The widget refreshes and re-stores the token automatically; if it stops,
+  re-run `python3 setup_auth.py`
 
 **The widget disappeared from the panel**
 
