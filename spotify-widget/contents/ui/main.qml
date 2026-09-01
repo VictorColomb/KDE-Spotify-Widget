@@ -45,7 +45,7 @@ PlasmoidItem {
     // Collapse out of the panel only when everything is working and Spotify
     // simply has nothing loaded. If the widget is unconfigured or KWallet
     // failed, stay visible — otherwise there is no way to right-click it.
-    readonly property bool idle: credentialsReady && walletError === "" && !hasTrack
+    readonly property bool idle: clientId !== "" && credentialsReady && walletError === "" && !hasTrack
 
     Plasmoid.status: idle ? PlasmaCore.Types.HiddenStatus
                           : PlasmaCore.Types.ActiveStatus
