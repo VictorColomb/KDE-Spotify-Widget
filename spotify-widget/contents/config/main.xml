@@ -5,8 +5,8 @@
                           http://www.kde.org/standards/kcfg/1.0/kcfg.xsd">
     <kcfgfile name=""/>
     <group name="General">
-        <!-- Only the non-secret Client ID is stored here. The client secret and
-             refresh token live in KWallet; see setup_auth.py. -->
+        <!-- Only the non-secret Client ID is stored here. The refresh token
+             lives in KWallet; see setup_auth.py. -->
         <entry name="clientId" type="String">
             <default></default>
         </entry>

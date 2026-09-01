@@ -2,6 +2,7 @@ import QtQuick
 import QtQuick.Controls as QQC2
 import QtQuick.Layouts
 import org.kde.kirigami as Kirigami
+import org.kde.private.spotifywidget.wallet
 
 ColumnLayout {
     id: generalConfigPage
@@ -27,9 +28,12 @@ ColumnLayout {
         Layout.fillWidth: true
         type: Kirigami.MessageType.Information
         visible: true
+        // The wallet is whichever one KWallet calls this user's local one, so
+        // name it rather than sending people looking in the wrong place.
         text: "Run <b>python3 setup_auth.py</b> in a terminal first — it stores your " +
-              "client secret and refresh token in <b>KWallet</b> and prints the Client ID " +
-              "to paste above. Add <b>http://127.0.0.1:8888/callback</b> as a Redirect URI " +
-              "in your Spotify Developer Dashboard app settings before running it."
+              "refresh token in <b>KWallet</b> (wallet <i>" + Wallet.localWalletName() +
+              "</i>, folder <i>Spotify Widget</i>) and prints the Client ID to paste " +
+              "above. Add <b>http://127.0.0.1:8888/callback</b> as a Redirect URI in " +
+              "your Spotify Developer Dashboard app settings before running it."
     }
 }

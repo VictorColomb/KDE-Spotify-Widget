@@ -8,7 +8,7 @@ import QtQuick.Layouts
 import org.kde.plasma.plasmoid
 import org.kde.kirigami as Kirigami
 import org.kde.plasma.core as PlasmaCore
-import org.kde.plasma.plasma5support as Plasma5Support
+import org.kde.private.spotifywidget.wallet
 
 PlasmoidItem {
     id: root
@@ -19,10 +19,9 @@ PlasmoidItem {
     readonly property string clientId: Plasmoid.configuration.clientId
 
     // ── Credentials from KWallet ────────────────────────────────────────────
-    property string clientSecret: ""
     property string refreshToken: ""
     property string walletError:  ""
-    readonly property bool credentialsReady: clientSecret !== "" && refreshToken !== ""
+    readonly property bool credentialsReady: refreshToken !== ""
 
     // ── OAuth state ─────────────────────────────────────────────────────────
     property string accessToken:    ""
@@ -71,50 +70,40 @@ PlasmoidItem {
     }
 
     // ── KWallet ─────────────────────────────────────────────────────────────
-    // There is no QML binding for KWallet, so we shell out to kwallet-query.
-    // Reads only: the value comes back on stdout and never touches a command
-    // line. Nothing is ever written from here, and there is no config-file
-    // fallback — if the wallet is locked or missing, the widget stays dark.
-    readonly property string walletName:   "kdewallet"
+    // Read and written through the bundled C++ plugin — no shell, so the
+    // refresh token can be stored back without ever reaching a command line.
+    // There is no config-file fallback: if the wallet is locked or missing,
+    // the widget stays dark.
     readonly property string walletFolder: "Spotify Widget"
-
-    function walletReadCmd(key) {
-        return "kwallet-query -f '" + walletFolder + "' -r " + key + " " + walletName
-    }
-
-    Plasma5Support.DataSource {
-        id: wallet
-        engine: "executable"
-        connectedSources: []
-
-        onNewData: function(source, data) {
-            disconnectSource(source)   // one-shot; the engine caches otherwise
-
-            // kwallet-query prints its errors on stdout and signals failure
-            // only through the exit code, so never trust stdout on its own.
-            var code   = data["exit code"]
-            var value  = (data["stdout"] || "").trim()
-            var isSecret = (source === root.walletReadCmd("clientSecret"))
-            var keyName  = isSecret ? "clientSecret" : "refreshToken"
-
-            if (code !== 0 || value === "") {
-                root.walletError = "Could not read " + keyName + " from KWallet"
-                                 + " (exit " + code + "). Is the wallet unlocked?"
-                console.error("Spotify Widget:", root.walletError, value)
-                return
-            }
-
-            if (isSecret) root.clientSecret = value
-            else          root.refreshToken = value
-        }
-    }
 
     function loadCredentials() {
         walletError  = ""
-        clientSecret = ""
         refreshToken = ""
-        wallet.connectSource(walletReadCmd("clientSecret"))
-        wallet.connectSource(walletReadCmd("refreshToken"))
+        Wallet.read(walletFolder, "refreshToken", function(value, error) {
+            if (error !== "") {
+                // The plugin's message says exactly what went wrong; this only
+                // adds the one thing it cannot know — whether setup ever ran.
+                root.walletError = error + " If you have not set the widget up yet, run setup_auth.py."
+                console.error("Spotify Widget:", root.walletError)
+                return
+            }
+            root.refreshToken = value
+        })
+    }
+
+    // Spotify hands back a new refresh token on most PKCE renewals. Adopt it
+    // for this session immediately, then persist it — a rotation we accept but
+    // fail to store leaves the widget authorized only until the next restart.
+    function persistRefreshToken(token) {
+        refreshToken = token
+        Wallet.write(walletFolder, "refreshToken", token, function(error) {
+            if (error !== "") {
+                root.walletError = error + " Re-run setup_auth.py if the widget stops updating."
+                console.error("Spotify Widget:", root.walletError)
+            } else {
+                root.walletError = ""
+            }
+        })
     }
 
     // ── Token management ────────────────────────────────────────────────────
@@ -126,20 +115,14 @@ PlasmoidItem {
         var xhr = new XMLHttpRequest()
         xhr.open("POST", "https://accounts.spotify.com/api/token")
         xhr.setRequestHeader("Content-Type", "application/x-www-form-urlencoded")
-        xhr.setRequestHeader("Authorization", "Basic " + Qt.btoa(clientId + ":" + clientSecret))
         xhr.onreadystatechange = function() {
             if (xhr.readyState !== XMLHttpRequest.DONE) return
             if (xhr.status === 200) {
                 var data = JSON.parse(xhr.responseText)
                 accessToken    = data.access_token
                 tokenExpiresAt = nowSeconds() + data.expires_in
-                // Secret-authenticated refresh keeps the token stable, which is
-                // why we can stay read-only. If Spotify ever rotates it anyway,
-                // say so loudly rather than silently expiring days later.
                 if (data.refresh_token && data.refresh_token !== refreshToken) {
-                    walletError = "Spotify rotated the refresh token. "
-                                + "Re-run setup_auth.py to store the new one."
-                    console.warn("Spotify Widget:", walletError)
+                    persistRefreshToken(data.refresh_token)
                 }
                 if (callback) callback()
             } else {
@@ -148,7 +131,8 @@ PlasmoidItem {
         }
         xhr.send(
             "grant_type=refresh_token" +
-            "&refresh_token=" + encodeURIComponent(refreshToken)
+            "&refresh_token=" + encodeURIComponent(refreshToken) +
+            "&client_id=" + encodeURIComponent(clientId)
         )
     }
 
@@ -512,7 +496,7 @@ PlasmoidItem {
         Item { Layout.preferredHeight: fullView.margin }
     }
 
-    // Both wallet reads land asynchronously; start once we have the pair.
+    // The wallet read lands asynchronously; start once the token is in hand.
     onCredentialsReadyChanged: {
         if (credentialsReady) {
             accessToken = ""
