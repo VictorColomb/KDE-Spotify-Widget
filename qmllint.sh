@@ -10,15 +10,24 @@
 # unversioned qmllint on PATH at all, so they hit no shadowing trap either.
 set -e
 
+# The widget imports org.kde.private.spotifywidget.wallet, which only exists
+# once CMake has built it. ECM mirrors the module into build/bin, so point
+# qmllint there rather than having it report the import unresolved.
+imports=""
+build_qml="$(dirname "$0")/build/bin"
+if [ -d "$build_qml" ]; then
+    imports="-I $build_qml"
+fi
+
 for candidate in qmllint-qt6 qmllint6 /usr/lib/qt6/bin/qmllint; do
     if command -v "$candidate" >/dev/null 2>&1; then
-        exec "$candidate" "$@"
+        exec "$candidate" $imports "$@"
     fi
 done
 
 # Last resort: whatever `qmllint` resolves to, if it's actually Qt6.
 if command -v qmllint >/dev/null 2>&1 && qmllint --version 2>&1 | grep -q ' 6\.'; then
-    exec qmllint "$@"
+    exec qmllint $imports "$@"
 fi
 
 echo "qmllint: no Qt6 qmllint found (checked qmllint-qt6, qmllint6, /usr/lib/qt6/bin/qmllint, qmllint)." >&2
