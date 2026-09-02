@@ -25,7 +25,7 @@ include(KDECMakeSettings)
 include(KDECompilerSettings NO_POLICY_SCOPE)
 include(ECMQmlModule)
 
-find_package(Qt6 6.5 REQUIRED COMPONENTS Qml)
+find_package(Qt6 6.5 REQUIRED COMPONENTS Qml Network)
 find_package(KF6 6.0 REQUIRED COMPONENTS Wallet Package)
 
 # And if the prefix was chosen explicitly, say so rather than letting it fail

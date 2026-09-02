@@ -14,6 +14,13 @@ kwallet-query -f 'Spotify Widget' -r refreshToken kdewallet       # wallet name:
 Widget `console.log`/`console.error` output goes to the `plasmashell` journal:
 `journalctl --user -f -t plasmashell`.
 
+To exercise a plugin type standalone (no Plasma, e.g. poking `OAuthCallback`
+with `curl`), run a throwaway `.qml` file with `qml-qt6 -a core -I build/bin
+file.qml` (binary name varies by distro like `qmllint`'s does; `-a core`
+skips needing a display server). Set `QT_LOGGING_TO_CONSOLE=1` too, or
+`console.log`/`console.warn` silently goes to journald instead of
+stdout/stderr in sandboxed/CI shells.
+
 ## Quality gates
 
 Run these before committing anything you touched. All four are non-zero on

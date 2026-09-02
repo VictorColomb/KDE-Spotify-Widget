@@ -8,10 +8,13 @@ ecm_add_qml_module(spotifywidgetwallet
 target_sources(spotifywidgetwallet PRIVATE
     walletbridge.cpp
     walletbridge.h
+    oauthcallback.cpp
+    oauthcallback.h
 )
 
 target_link_libraries(spotifywidgetwallet PRIVATE
     Qt6::Qml
+    Qt6::Network
     KF6::Wallet
 )
 
