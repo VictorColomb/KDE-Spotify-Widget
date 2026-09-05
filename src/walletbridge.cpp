@@ -183,6 +183,7 @@ void WalletBridge::runRequest(const Request &request)
     if (m_wallet->writePassword(request.key, request.value) != 0) {
         deliver(request.callback, {QJSValue(QStringLiteral("Could not write \"%1\" to %2.").arg(request.key, where))});
     } else {
+        Q_EMIT wroteEntry(request.folder, request.key);
         deliver(request.callback, {QJSValue(QString())});
     }
 }

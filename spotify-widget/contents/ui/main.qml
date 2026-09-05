@@ -83,7 +83,7 @@ PlasmoidItem {
             if (error !== "") {
                 // The plugin's message says exactly what went wrong; this only
                 // adds the one thing it cannot know — whether setup ever ran.
-                root.walletError = error + " If you have not set the widget up yet, run setup_auth.py."
+                root.walletError = error + " If you have not authorized the widget yet, right-click → Configure → Authorize with Spotify."
                 console.error("Spotify Widget:", root.walletError)
                 return
             }
@@ -98,7 +98,7 @@ PlasmoidItem {
         refreshToken = token
         Wallet.write(walletFolder, "refreshToken", token, function(error) {
             if (error !== "") {
-                root.walletError = error + " Re-run setup_auth.py if the widget stops updating."
+                root.walletError = error + " Re-authorize from Configure if the widget stops updating."
                 console.error("Spotify Widget:", root.walletError)
             } else {
                 root.walletError = ""
@@ -383,7 +383,7 @@ PlasmoidItem {
             Layout.fillWidth: true
             type:    Kirigami.MessageType.Warning
             visible: root.walletError === "" && !root.credentialsReady
-            text:    "Run <b>setup_auth.py</b>, then right-click → Configure to add your Client ID."
+            text:    "Right-click → Configure to add your Client ID and authorize with Spotify."
         }
 
         // -- Album art --
@@ -511,6 +511,20 @@ PlasmoidItem {
         target: Plasmoid.configuration
         function onClientIdChanged() {
             root.loadCredentials()
+        }
+    }
+
+    // Wallet is a shell-wide singleton, so this also fires for a token the
+    // Configure dialog's "Authorize with Spotify" just wrote — picking it up
+    // immediately, no plasmashell restart needed. persistRefreshToken()'s own
+    // writes loop back here too; re-reading the value we just wrote is
+    // redundant but harmless.
+    Connections {
+        target: Wallet
+        function onWroteEntry(folder, key) {
+            if (folder === root.walletFolder && key === "refreshToken") {
+                root.loadCredentials()
+            }
         }
     }
 }

@@ -19,6 +19,9 @@ if [ -d "$build_qml" ]; then
     imports="-I $build_qml"
 fi
 
+# Extra flags (e.g. --bare, to diagnose a stale system-wide install shadowing
+# build/bin — see AGENTS.md) pass straight through via "$@" onto whichever
+# real Qt6 binary we found, same as any other qmllint argument.
 for candidate in qmllint-qt6 qmllint6 /usr/lib/qt6/bin/qmllint; do
     if command -v "$candidate" >/dev/null 2>&1; then
         exec "$candidate" $imports "$@"

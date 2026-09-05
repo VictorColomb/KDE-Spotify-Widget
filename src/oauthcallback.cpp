@@ -6,6 +6,8 @@
 
 #include "oauthcallback.h"
 
+#include <QCryptographicHash>
+#include <QRandomGenerator>
 #include <QTcpServer>
 #include <QTcpSocket>
 #include <QTimer>
@@ -126,4 +128,19 @@ void OAuthCallback::handleNewConnection()
 void OAuthCallback::finish(const QString &code, const QString &state, const QString &error)
 {
     Q_EMIT callbackReceived(code, state, error);
+}
+
+QString OAuthCallback::randomToken(int byteLength) const
+{
+    QByteArray bytes(byteLength, '\0');
+    for (char &b : bytes) {
+        b = static_cast<char>(QRandomGenerator::system()->bounded(256));
+    }
+    return QString::fromLatin1(bytes.toBase64(QByteArray::Base64UrlEncoding | QByteArray::OmitTrailingEquals));
+}
+
+QString OAuthCallback::pkceChallenge(const QString &verifier) const
+{
+    const QByteArray digest = QCryptographicHash::hash(verifier.toUtf8(), QCryptographicHash::Sha256);
+    return QString::fromLatin1(digest.toBase64(QByteArray::Base64UrlEncoding | QByteArray::OmitTrailingEquals));
 }

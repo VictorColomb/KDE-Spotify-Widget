@@ -22,7 +22,6 @@ Spotify desktop app open.
 ## Prerequisites
 
 - KDE Plasma 6
-- Python 3 (stdlib only — no pip installs needed) for the one-time setup
 - KWallet, running and unlocked — `kwallet-query` must be on `PATH` (Fedora:
   `kf6-kwallet`; Arch: `kwallet`).
 - A C++ toolchain and the KWallet headers, to build the widget's wallet plugin:
@@ -52,33 +51,7 @@ Spotify desktop app open.
 4. Save and note your **Client ID**. There is no need for the Client Secret —
    the widget authenticates with PKCE.
 
-### Step 2 — Authorize and Store Credentials
-
-Run the one-time setup script from the repo root:
-
-```bash
-python3 setup_auth.py
-```
-
-It will:
-
-1. Ask for your Client ID
-2. Open a browser to the Spotify login/authorization page
-3. Catch the callback automatically on `127.0.0.1` (verifying the OAuth `state`)
-4. Store the **refresh token** in KWallet, then read it back to confirm the
-   write landed
-
-The token is never printed and never written to a config file — it goes straight
-into KWallet, folder **Spotify Widget**, in whichever wallet KWallet reports as
-your local one (usually `kdewallet`; the widget's Configure dialog names it).
-You can inspect or remove it with `kwalletmanager5`. Only the Client ID, which
-is not a secret, is echoed for you to paste into the widget.
-
-From then on the widget maintains the token itself: Spotify issues a fresh
-refresh token on renewal and the widget writes each one back to KWallet, so you
-should not need to run this script again.
-
-### Step 3 — Build and Install
+### Step 2 — Build and Install
 
 The widget talks to KWallet through a small C++ QML plugin, so there is one
 build step. From the repo root:
@@ -106,17 +79,19 @@ plasmashell --replace &
 
 To update after pulling changes, re-run the same three commands.
 
-### Step 4 — Add and Configure the Widget
+### Step 3 — Add, Configure, and Authorize the Widget
 
 1. Right-click your desktop → **Add Widgets**
 2. Search for **Spotify Widget** and drag it onto the desktop
 3. Right-click the widget → **Configure Spotify Widget...**
-4. In the **General** tab, fill in **Client ID** — that's the only field
-5. Click **OK**
+4. In the **General** tab, paste your **Client ID**
+5. Click **Authorize with Spotify** — it opens your browser to Spotify's login
+   page and stores the refresh token in KWallet as soon as you approve access
+6. Click **OK**
 
-The widget reads the refresh token from KWallet on startup. If the wallet is
-locked, missing, or doesn't contain the entry, it shows an error and does
-nothing — by design, there is no fallback to plaintext storage.
+The widget picks up the token immediately — no plasmashell restart needed. If
+the wallet is locked, missing, or doesn't contain the entry, it shows an error
+and does nothing — by design, there is no fallback to plaintext storage.
 
 The widget will start showing your currently playing track within a couple of
 seconds.
@@ -178,7 +153,17 @@ Widget**).
 
 **"Configure widget" warning appears**
 
-- You haven't entered your Client ID yet — right-click → Configure
+- You haven't entered your Client ID and authorized yet — right-click →
+  Configure
+
+**"Authorization failed" / "State mismatch" / token exchange error in
+Configure**
+
+- Make sure `http://127.0.0.1:8888/callback` is registered as a Redirect URI in
+  your Spotify Developer Dashboard app
+- Nothing else is listening on port 8888
+- Click **Authorize with Spotify** again — each attempt starts a fresh PKCE
+  exchange
 
 **"KWallet has no ..." error**
 
@@ -186,7 +171,7 @@ Widget**).
 - The message names the exact wallet and folder it looked in; confirm the entry
   exists with
   `kwallet-query -f 'Spotify Widget' -r refreshToken <that wallet name>`
-- If it doesn't, re-run `python3 setup_auth.py`
+- If it doesn't, right-click → Configure → **Authorize with Spotify**
 - This is intentional: the widget has no plaintext fallback and stays dark on
   failure
 
@@ -199,8 +184,7 @@ Widget**).
 
 **Upgrading from a version that used a Client Secret**
 
-- Re-run `python3 setup_auth.py`. A token issued under the old secret-based flow
-  can't be refreshed with PKCE, so it has to be reissued.
+- Right-click → Configure → **Authorize with Spotify** again.
 - Your old `clientSecret` entry stays in the wallet, unused and ignored by the
   widget. Delete it in `kwalletmanager5` (folder **Spotify Widget**) whenever
   you like.
@@ -208,7 +192,7 @@ Widget**).
 **Token expires / widget stops updating**
 
 - The widget refreshes and re-stores the token automatically; if it stops,
-  re-run `python3 setup_auth.py`
+  right-click → Configure → **Authorize with Spotify** again
 
 **The widget disappeared from the panel**
 

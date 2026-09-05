@@ -5,7 +5,6 @@
 ```bash
 cmake -B build && cmake --build build                             # C++ wallet plugin
 sudo cmake --install build                                        # plugin + applet, system-wide
-python3 setup_auth.py --selftest                                  # only test suite (pure-function asserts)
 kpackagetool6 --type Plasma/Applet --upgrade spotify-widget/      # QML-only iteration, per-user
 plasmashell --replace &                                           # reload Plasma to pick up changes
 kwallet-query -f 'Spotify Widget' -r refreshToken kdewallet       # wallet name: see Configure dialog
@@ -28,16 +27,11 @@ failure, so they chain with `&&`.
 
 ```bash
 cmake --build build                                        # C++ must compile warning-free
-python3 -m py_compile setup_auth.py                        # Python syntax (same parse as ast.parse)
-python3 setup_auth.py --selftest                           # pure-function asserts
 ./qmllint.sh spotify-widget/contents/ui/main.qml           # and any other .qml you edited
 ```
 
 Notes:
 
-- `py_compile` is the no-shell-quoting form of an `ast.parse` check; its
-  bytecode lands in the gitignored `__pycache__/`. There is no formatter or
-  linter for the Python — syntax and the selftest are the whole bar.
 - `qmllint.sh` wraps Qt6's `qmllint`, whose binary name differs by distro. Never
   call plain `qmllint` directly. It is the only QML check there is; there is no
   QML build step, so a typo otherwise surfaces as a silently blank widget. It
@@ -46,18 +40,29 @@ Notes:
 - The wrapper passes `-I build/bin` when that directory exists. Without it,
   `main.qml`'s import of the wallet plugin is unresolved and every call into it
   goes unchecked, so **build before you lint** or the gate quietly weakens.
+- A stale **system-wide** copy of the plugin (from a previous
+  `sudo cmake --install`) shadows `build/bin` for qmllint's default import
+  search and can make a type added since that install (e.g. a new
+  `OAuthCallback` method) falsely report as "Unqualified access".
+  `sudo cmake --install build` refreshes it; `./qmllint.sh --bare ...` confirms
+  it's the stale copy at fault, not your code — `--bare` drops _all_ default
+  import dirs, not just the stale one, so expect noisy "Failed to import"
+  warnings for QtQuick/Kirigami/Plasma too; only the wallet-plugin warning
+  disappearing is the signal.
 
 ## Architecture
 
-Three pieces:
+Two pieces:
 
-- `setup_auth.py` — one-time OAuth dance (stdlib only). Runs a loopback HTTP
-  server on `127.0.0.1:8888`, does PKCE + state verification, exchanges the
-  code, and writes `refreshToken` into KWallet.
-- `src/` — a C++ QML module, `org.kde.private.spotifywidget.wallet`, wrapping
-  `KF6::Wallet`. Built by CMake; installed into Qt's QML import path.
-- `spotify-widget/` — the Plasma 6 applet. All logic lives in
-  [main.qml](spotify-widget/contents/ui/main.qml); the config pages are trivial.
+- `src/` — a C++ QML module, `org.kde.private.spotifywidget.wallet`, exposing
+  `Wallet` (wraps `KF6::Wallet`) and `OAuthCallback` (a one-shot loopback
+  listener for the Spotify redirect, plus PKCE helpers). Built by CMake;
+  installed into Qt's QML import path.
+- `spotify-widget/` — the Plasma 6 applet. Playback logic lives in
+  [main.qml](spotify-widget/contents/ui/main.qml); the one-time "Authorize with
+  Spotify" PKCE dance lives in
+  [configGeneral.qml](spotify-widget/contents/ui/configGeneral.qml) — both
+  configuring and authorizing happen in the widget's own Configure dialog.
 
 ### Credential flow
 
@@ -92,6 +97,25 @@ empty, the widget shows an error and does nothing. Don't add one.
 
 Per-request `setFolder`/`readPassword`/`writePassword` are synchronous D-Bus
 calls, which is fine: on an already-open wallet they never prompt.
+
+`WalletBridge` also emits `wroteEntry(folder, key)` after every successful
+write. QML singletons are shared shell-wide, so `main.qml`'s own listener on
+that signal is what lets it reload the moment `configGeneral.qml`'s "Authorize
+with Spotify" writes a fresh `refreshToken` — no plasmashell restart, no
+`Plasmoid.configuration` round-trip needed.
+
+### The Authorize-with-Spotify flow
+
+`configGeneral.qml` runs the whole PKCE dance that `setup_auth.py` used to do
+from a terminal: `OAuthCallback.randomToken()` generates the verifier and
+`state` (QML has no secure RNG), `OAuthCallback.pkceChallenge()` hashes the
+verifier (QML has no SHA-256), `OAuthCallback.listen(8888)` starts the loopback
+server, and `Qt.openUrlExternally()` opens the browser — the same URL is also
+left in a read-only field as a copy-paste fallback in case that call can't reach
+a browser. `OAuthCallback.callbackReceived` delivers `code`/`state`/ `error`; a
+`state` mismatch is treated as a rejected callback, same as `setup_auth.py`'s
+`_parse_callback`. The code exchange is the same `XMLHttpRequest` POST
+`main.qml:refreshAccessToken()` already does.
 
 ### Installation is the sharp edge
 

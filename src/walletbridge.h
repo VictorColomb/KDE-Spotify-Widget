@@ -46,6 +46,12 @@ public:
     /** callback(error) */
     Q_INVOKABLE void write(const QString &folder, const QString &key, const QString &value, const QJSValue &callback);
 
+Q_SIGNALS:
+    /** Emitted after a successful write, so another QML context sharing this
+     * singleton (e.g. main.qml, after Configure writes a fresh token) can
+     * reload without waiting for a plasmashell restart. */
+    void wroteEntry(const QString &folder, const QString &key);
+
 private:
     enum class Type {
         Read,

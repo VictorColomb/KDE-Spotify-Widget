@@ -41,6 +41,16 @@ public:
     /** Stops listening without emitting callbackReceived (e.g. dialog closed). */
     Q_INVOKABLE void stop();
 
+    /**
+     * Cryptographically-random base64url string of byteLength random bytes —
+     * QML/JS has no secure RNG, so this backs both the PKCE verifier and the
+     * `state` param. Mirrors setup_auth.py's secrets.token_bytes()/token_urlsafe().
+     */
+    Q_INVOKABLE QString randomToken(int byteLength) const;
+
+    /** The S256 PKCE code_challenge for a verifier: base64url(sha256(verifier)). */
+    Q_INVOKABLE QString pkceChallenge(const QString &verifier) const;
+
 Q_SIGNALS:
     void callbackReceived(const QString &code, const QString &state, const QString &error);
 
