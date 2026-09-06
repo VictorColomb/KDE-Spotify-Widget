@@ -26,6 +26,7 @@ PlasmoidItem {
     // ── OAuth state ─────────────────────────────────────────────────────────
     property string accessToken:    ""
     property int    tokenExpiresAt: 0   // epoch seconds
+    property string apiError: ""
 
     // ── Currently-playing state ─────────────────────────────────────────────
     property string trackName:   "Not playing"
@@ -42,9 +43,9 @@ PlasmoidItem {
     property int    preCommandProgress: 0
 
     // Collapse out of the panel only when everything is working and Spotify
-    // simply has nothing loaded. If the widget is unconfigured or KWallet
-    // failed, stay visible — otherwise there is no way to right-click it.
-    readonly property bool idle: clientId !== "" && credentialsReady && walletError === "" && !hasTrack
+    // simply has nothing loaded. If the widget is unconfigured, KWallet
+    // failed, or the Spotify API is erroring, stay visible
+    readonly property bool idle: clientId !== "" && credentialsReady && walletError === "" && apiError === "" && !hasTrack
 
     Plasmoid.status: idle ? PlasmaCore.Types.HiddenStatus
                           : PlasmaCore.Types.ActiveStatus
@@ -67,6 +68,17 @@ PlasmoidItem {
     function formatTime(ms) {
         var s = Math.floor(ms / 1000)
         return Math.floor(s / 60) + ":" + ("0" + (s % 60)).slice(-2)
+    }
+
+    function describeApiError(xhr, action) {
+        var detail = ""
+        try {
+            var data = JSON.parse(xhr.responseText)
+            detail = data.error_description || (data.error && data.error.message) || ""
+        } catch (e) {
+            // Empty or non-JSON body — fall through to the status-only message.
+        }
+        return action + " failed (HTTP " + xhr.status + ")" + (detail ? ": " + detail : ".")
     }
 
     // ── KWallet ─────────────────────────────────────────────────────────────
@@ -118,6 +130,7 @@ PlasmoidItem {
         xhr.onreadystatechange = function() {
             if (xhr.readyState !== XMLHttpRequest.DONE) return
             if (xhr.status === 200) {
+                root.apiError  = ""
                 var data = JSON.parse(xhr.responseText)
                 accessToken    = data.access_token
                 tokenExpiresAt = nowSeconds() + data.expires_in
@@ -126,7 +139,8 @@ PlasmoidItem {
                 }
                 if (callback) callback()
             } else {
-                console.error("Spotify Widget: token refresh failed", xhr.status, xhr.responseText)
+                root.apiError = root.describeApiError(xhr, "Token refresh")
+                console.error("Spotify Widget:", root.apiError)
             }
         }
         xhr.send(
@@ -154,6 +168,7 @@ PlasmoidItem {
             xhr.onreadystatechange = function() {
                 if (xhr.readyState !== XMLHttpRequest.DONE) return
                 if (xhr.status === 200) {
+                    root.apiError = ""
                     var data = JSON.parse(xhr.responseText)
                     if (data && data.item) {
                         trackName  = data.item.name
@@ -170,6 +185,7 @@ PlasmoidItem {
                     }
                 } else if (xhr.status === 204) {
                     // Nothing currently playing
+                    root.apiError = ""
                     trackName   = "Not playing"
                     artistName  = ""
                     isPlaying   = false
@@ -178,6 +194,9 @@ PlasmoidItem {
                 } else if (xhr.status === 401) {
                     // Token expired mid-poll — clear so next cycle forces refresh
                     accessToken = ""
+                } else {
+                    root.apiError = root.describeApiError(xhr, "Spotify request")
+                    console.error("Spotify Widget:", root.apiError)
                 }
             }
             xhr.send()
@@ -191,6 +210,12 @@ PlasmoidItem {
             xhr.setRequestHeader("Authorization", "Bearer " + accessToken)
             xhr.onreadystatechange = function() {
                 if (xhr.readyState !== XMLHttpRequest.DONE) return
+                if (xhr.status < 200 || xhr.status >= 300) {
+                    root.apiError = root.describeApiError(xhr, "Playback command")
+                    console.error("Spotify Widget:", root.apiError)
+                    return
+                }
+                root.apiError = ""
                 // Spotify's player state lags the command, so a single re-poll
                 // often still returns the previous track. Re-check a few times
                 // and stop as soon as the state actually moves.
@@ -332,11 +357,12 @@ PlasmoidItem {
             QQC2.Label {
                 id: trackLabel
                 width:     parent.width
-                text:      root.trackName
+                text:      (root.walletError !== "" || root.apiError !== "") ? "Error" : root.trackName
                 font.bold: true
                 font.pointSize: Kirigami.Theme.defaultFont.pointSize * 0.85
                 elide:     Text.ElideRight
                 maximumLineCount: 1
+                visible:   !(root.walletError === "" && !root.credentialsReady)
             }
 
             QQC2.Label {
@@ -376,6 +402,14 @@ PlasmoidItem {
             type:    Kirigami.MessageType.Error
             visible: root.walletError !== ""
             text:    root.walletError
+        }
+
+        // -- Spotify API failure --
+        Kirigami.InlineMessage {
+            Layout.fillWidth: true
+            type:    Kirigami.MessageType.Error
+            visible: root.apiError !== ""
+            text:    root.apiError
         }
 
         // -- Unconfigured notice --
