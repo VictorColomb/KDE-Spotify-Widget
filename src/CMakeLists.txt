@@ -10,6 +10,8 @@ target_sources(spotifywidgetwallet PRIVATE
     walletbridge.h
     oauthcallback.cpp
     oauthcallback.h
+    httpbridge.cpp
+    httpbridge.h
 )
 
 target_link_libraries(spotifywidgetwallet PRIVATE

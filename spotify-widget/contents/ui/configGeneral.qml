@@ -9,11 +9,14 @@ ColumnLayout {
 
     // cfg_ properties are automatically synced with main.xml config keys
     property alias cfg_clientId: clientIdField.text
+    property alias cfg_playlistId: playlistField.text
 
     readonly property string walletFolder: "Spotify Widget"
     readonly property string redirectUri:  "http://127.0.0.1:8888/callback"
     readonly property string scopes:
         "user-read-currently-playing user-read-playback-state user-modify-playback-state"
+        + " user-library-read user-library-modify"
+        + " playlist-read-private playlist-modify-public playlist-modify-private"
 
     // ── Authorize-with-Spotify flow state ───────────────────────────────────
     // A C++ port of setup_auth.py's PKCE dance: generate verifier/state, open
@@ -125,6 +128,13 @@ ColumnLayout {
                 enabled: clientIdField.text !== "" && !generalConfigPage.authorizing
                 onClicked: generalConfigPage.startAuthorization()
             }
+        }
+
+        QQC2.TextField {
+            id: playlistField
+            Kirigami.FormData.label: "Add-button playlist:"
+            Layout.fillWidth: true
+            placeholderText: "Playlist link or ID (empty = no playlist button)"
         }
     }
 

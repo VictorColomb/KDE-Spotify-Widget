@@ -10,5 +10,9 @@
         <entry name="clientId" type="String">
             <default></default>
         </entry>
+        <!-- Target playlist for the add button: ID, URI or URL. Empty = Liked Songs. -->
+        <entry name="playlistId" type="String">
+            <default></default>
+        </entry>
     </group>
 </kcfg>

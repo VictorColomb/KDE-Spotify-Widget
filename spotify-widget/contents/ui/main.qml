@@ -37,6 +37,20 @@ PlasmoidItem {
     property bool   isPlaying:   false
     property bool   hasTrack:    false
 
+    // ── Add-to-playlist state ───────────────────────────────────────────────
+    // Accepts a bare ID, a spotify:playlist: URI or an open.spotify.com URL.
+    // Empty means no playlist button; the Liked Songs button is always there.
+    readonly property string playlistId:
+        Plasmoid.configuration.playlistId.split("?")[0].split(/[\/:]/).pop().trim()
+    property string trackId:      ""
+    property string trackUri:     ""
+    property bool   inLiked:      false
+    property bool   inPlaylist:   false
+    // Spotify has no "is track in playlist" call, so a playlist's track IDs are
+    // loaded once and kept in sync locally. ponytail: external edits to the
+    // playlist show up only on reload; Liked Songs uses the live contains call.
+    property var    playlistTrackIds: ({})
+
     // Follow-up polling after a playback command (see sendPlaybackCommand)
     property int    refreshBurst:       0
     property string preCommandState:    ""
@@ -177,6 +191,8 @@ PlasmoidItem {
                         durationMs = data.item.duration_ms || 1
                         isPlaying  = data.is_playing
                         hasTrack   = true
+                        trackUri   = data.item.uri || ""
+                        trackId    = data.item.is_local ? "" : (data.item.id || "")
                         var imgs = data.item.album && data.item.album.images
                         if (imgs && imgs.length > 0) {
                             // Prefer medium image (~300px) when available
@@ -190,6 +206,7 @@ PlasmoidItem {
                     artistName  = ""
                     isPlaying   = false
                     hasTrack    = false
+                    trackId     = ""
                     albumArtUrl = ""
                 } else if (xhr.status === 401) {
                     // Token expired mid-poll — clear so next cycle forces refresh
@@ -201,6 +218,99 @@ PlasmoidItem {
             }
             xhr.send()
         })
+    }
+
+    // Minimal authenticated call; path may be relative to /v1/ or a full URL
+    // (Spotify's pagination `next`). callback(status, parsedBodyOrNull).
+    function spotifyApi(method, path, body, callback) {
+        withToken(function() {
+            var url  = path.indexOf("https://") === 0 ? path : "https://api.spotify.com/v1/" + path
+            var what = method + " " + path.split("?")[0].replace("https://api.spotify.com/v1/", "")
+            function done(status, text) {
+                var data = null
+                try { data = JSON.parse(text) } catch (e) { /* empty body */ }
+                if (status < 200 || status >= 300) {
+                    root.apiError = root.describeApiError({ status: status, responseText: text }, what)
+                    console.error("Spotify Widget:", root.apiError)
+                }
+                callback(status, data)
+            }
+            // QML's XMLHttpRequest drops a DELETE body; the plugin sends it properly.
+            if (method === "DELETE" && body !== null) {
+                Http.deleteJson(url, accessToken, JSON.stringify(body), done)
+                return
+            }
+            var xhr = new XMLHttpRequest()
+            xhr.open(method, url)
+            xhr.setRequestHeader("Authorization", "Bearer " + accessToken)
+            xhr.onreadystatechange = function() {
+                if (xhr.readyState !== XMLHttpRequest.DONE) return
+                done(xhr.status, xhr.responseText)
+            }
+            if (body !== null) {
+                xhr.setRequestHeader("Content-Type", "application/json")
+                xhr.send(JSON.stringify(body))
+            } else {
+                xhr.send()
+            }
+        })
+    }
+
+    function loadPlaylistTrackIds(path, ids, forPlaylist) {
+        if (forPlaylist === "") return
+        spotifyApi("GET", path || "playlists/" + forPlaylist + "/items?limit=100",
+                   null, function(status, data) {
+            if (forPlaylist !== root.playlistId) return   // setting changed meanwhile
+            if (status !== 200 || !data) return
+            ids = ids || {}
+            // The /items response may call the entry `item` or the older `track`.
+            data.items.forEach(function(i) {
+                var t = i.item || i.track
+                if (t && t.id) ids[t.id] = true
+            })
+            if (data.next) {
+                root.loadPlaylistTrackIds(data.next, ids, forPlaylist)
+            } else {
+                root.playlistTrackIds = ids
+                root.refreshInPlaylist()
+            }
+        })
+    }
+
+    function refreshInPlaylist() {
+        var id = trackId
+        inPlaylist = id !== "" && playlistTrackIds[id] === true
+        if (id === "") { inLiked = false; return }
+        spotifyApi("GET", "me/library/contains?uris=" + encodeURIComponent(trackUri), null, function(status, data) {
+            if (status === 200 && id === root.trackId) root.inLiked = data[0] === true
+        })
+    }
+
+    // liked: true targets Liked Songs, false the configured playlist.
+    function toggleTarget(liked) {
+        var add = !(liked ? inLiked : inPlaylist), id = trackId, uri = trackUri, pl = playlistId
+        var method = add ? (liked ? "PUT" : "POST") : "DELETE"
+        var path   = liked ? "me/library?uris=" + encodeURIComponent(uri) : "playlists/" + pl + "/items"
+        var body   = liked ? null : (add ? { uris: [uri] } : { items: [{ uri: uri }] })
+        spotifyApi(method, path, body, function(status) {
+            if (status < 200 || status >= 300) return
+            if (!liked) {
+                var ids = root.playlistTrackIds
+                if (add) ids[id] = true; else delete ids[id]
+                root.playlistTrackIds = ids
+            }
+            if (id !== root.trackId) return
+            if (liked) root.inLiked = add; else root.inPlaylist = add
+        })
+    }
+
+    onTrackIdChanged: refreshInPlaylist()
+    onPlaylistIdChanged: {
+        playlistTrackIds = ({})
+        if (credentialsReady) {
+            loadPlaylistTrackIds("", null, playlistId)
+            refreshInPlaylist()
+        }
     }
 
     function sendPlaybackCommand(method, endpoint, body) {
@@ -525,6 +635,21 @@ PlasmoidItem {
                 icon.name: "media-skip-forward"
                 onClicked: root.sendPlaybackCommand("POST", "next", null)
             }
+
+            // Liked Songs
+            QQC2.ToolButton {
+                icon.name: root.inLiked ? "starred-symbolic" : "non-starred-symbolic"
+                enabled:   root.trackId !== ""
+                onClicked: root.toggleTarget(true)
+            }
+
+            // Configured playlist; only present when one is set
+            QQC2.ToolButton {
+                visible:   root.playlistId !== ""
+                icon.name: root.inPlaylist ? "bookmarks-bookmarked-symbolic" : "bookmarks-symbolic"
+                enabled:   root.trackId !== ""
+                onClicked: root.toggleTarget(false)
+            }
         }
 
         Item { Layout.preferredHeight: fullView.margin }
@@ -535,6 +660,7 @@ PlasmoidItem {
         if (credentialsReady) {
             accessToken = ""
             withToken(function() { root.fetchCurrentlyPlaying() })
+            root.loadPlaylistTrackIds("", null, root.playlistId)
         }
     }
 
