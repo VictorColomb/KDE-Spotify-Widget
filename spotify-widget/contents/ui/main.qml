@@ -51,6 +51,64 @@ PlasmoidItem {
     // playlist show up only on reload; Liked Songs uses the live contains call.
     property var    playlistTrackIds: ({})
 
+    // ── Lyrics (LRCLIB; Spotify has no public lyrics API) ───────────────────
+    property bool   showLyrics: false        // lyrics in the popup, over the cover
+    property bool   showPanelLyrics: false   // current + next line beside the panel widget
+    readonly property string currentLine: lyricLines[lyricIndex] ? lyricLines[lyricIndex].text : ""
+    readonly property string nextLine:    lyricLines[lyricIndex + 1] ? lyricLines[lyricIndex + 1].text : ""
+    property string lyrics:     ""
+    property string lyricsKey:  ""   // track the current `lyrics` belongs to
+
+    // Synced lines [{t: ms, text}] when LRCLIB has them, else `lyrics` holds
+    // plain text or a status message. Fetched when the lyrics view is open and
+    // the track changes.
+    property var lyricLines: []
+    // Manual sync fix for the current track: + shows lyrics later, − earlier.
+    property int lyricsOffsetMs: 0
+    readonly property int lyricIndex: {
+        var i = -1, now = progressMs - lyricsOffsetMs
+        for (var k = 0; k < lyricLines.length && lyricLines[k].t <= now; k++) i = k
+        return i
+    }
+
+    function parseSynced(lrc) {
+        var out = []
+        lrc.split("\n").forEach(function(l) {
+            var m = /^\[(\d+):(\d+(?:\.\d+)?)\]\s*(.*)$/.exec(l)
+            if (m) out.push({ t: (m[1] * 60 + parseFloat(m[2])) * 1000, text: m[3] })
+        })
+        return out
+    }
+
+    function fetchLyrics() {
+        var key = trackName + "|" + artistName
+        if (!(showLyrics || showPanelLyrics) || !hasTrack || key === lyricsKey) return
+        lyricsKey  = key
+        lyricsOffsetMs = 0   // a sync error belongs to one track's LRC file
+        lyricLines = []
+        lyrics     = "Loading…"
+        var xhr = new XMLHttpRequest()
+        xhr.open("GET", "https://lrclib.net/api/get?track_name=" + encodeURIComponent(trackName) +
+                        "&artist_name=" + encodeURIComponent(artistName.split(", ")[0]) +
+                        "&duration=" + Math.round(durationMs / 1000))
+        xhr.onreadystatechange = function() {
+            if (xhr.readyState !== XMLHttpRequest.DONE || key !== root.lyricsKey) return
+            var text = "", synced = ""
+            if (xhr.status === 200) {
+                try {
+                    var d = JSON.parse(xhr.responseText)
+                    text   = d.plainLyrics || ""
+                    synced = d.syncedLyrics || ""
+                } catch (e) { /* bad body */ }
+            }
+            root.lyricLines = root.parseSynced(synced)
+            root.lyrics = text !== "" ? text : (xhr.status === 200 ? "No lyrics (instrumental?)." : "No lyrics found.")
+        }
+        xhr.send()
+    }
+    onShowLyricsChanged: fetchLyrics()
+    onShowPanelLyricsChanged: fetchLyrics()
+
     // Follow-up polling after a playback command (see sendPlaybackCommand)
     property int    refreshBurst:       0
     property string preCommandState:    ""
@@ -198,6 +256,7 @@ PlasmoidItem {
                             // Prefer medium image (~300px) when available
                             albumArtUrl = imgs[imgs.length > 1 ? 1 : 0].url
                         }
+                        root.fetchLyrics()
                     }
                 } else if (xhr.status === 204) {
                     // Nothing currently playing
@@ -417,7 +476,9 @@ PlasmoidItem {
         readonly property int textWidth: Math.min(maxTextWidth,
                                                   Math.ceil(Math.max(trackLabel.implicitWidth,
                                                                      artistLabel.implicitWidth)))
-        readonly property int fullWidth: artSize + gap + textWidth + gap
+        // Fixed width (not text-driven) so the panel slot doesn't jitter per line.
+        readonly property int lyricsWidth: root.showPanelLyrics && root.lyricLines.length > 0 ? 240 : 0
+        readonly property int fullWidth: (lyricsWidth > 0 ? lyricsWidth + gap : 0) + artSize + gap + textWidth + gap
 
         // Zero-width when idle: Plasmoid.status alone only hides system-tray
         // items, so a panel applet has to collapse itself.
@@ -432,10 +493,42 @@ PlasmoidItem {
         hoverEnabled: true
         onClicked: root.expanded = !root.expanded
 
+        // -- Current / next lyric line, left of the cover --
+        Column {
+            id: lyricsCol
+            anchors.left:           parent.left
+            anchors.verticalCenter: parent.verticalCenter
+            width:   compactRoot.lyricsWidth
+            visible: compactRoot.lyricsWidth > 0
+
+            QQC2.Label {
+                id: currentLineLabel
+                width:     parent.width
+                text:      root.currentLine
+                font.bold: true
+                font.pointSize: Kirigami.Theme.defaultFont.pointSize * 0.85
+                horizontalAlignment: Text.AlignRight
+                wrapMode:  Text.WordWrap
+                elide:     Text.ElideRight
+                maximumLineCount: 2
+            }
+            QQC2.Label {
+                width:     parent.width
+                text:      root.nextLine
+                visible:   currentLineLabel.lineCount < 2   // no room once the current line wraps
+                opacity:   0.6
+                font.pointSize: Kirigami.Theme.defaultFont.pointSize * 0.75
+                horizontalAlignment: Text.AlignRight
+                elide:     Text.ElideRight
+                maximumLineCount: 1
+            }
+        }
+
         // -- Album art + progress underline --
         Item {
             id: artHolder
-            anchors.left:           parent.left
+            anchors.left:           lyricsCol.right
+            anchors.leftMargin:     compactRoot.lyricsWidth > 0 ? compactRoot.gap : 0
             anchors.verticalCenter: parent.verticalCenter
             width:  compactRoot.artSize
             height: compactRoot.artSize
@@ -560,6 +653,90 @@ PlasmoidItem {
                     opacity: 0.4
                 }
             }
+
+            // Click the cover to flip it to the lyrics and back.
+            Rectangle {
+                anchors.fill: parent
+                color:        Kirigami.Theme.backgroundColor
+                visible:      root.showLyrics
+
+                // Synced: current line stays centred and bold, others dimmed
+                ListView {
+                    anchors.fill:    parent
+                    anchors.margins: Kirigami.Units.smallSpacing
+                    anchors.bottomMargin: Kirigami.Units.smallSpacing + offsetBar.height
+                    visible:         root.lyricLines.length > 0
+                    model:           root.lyricLines
+                    clip:            true
+                    interactive:     false
+                    currentIndex:    root.lyricIndex
+                    highlightRangeMode:         ListView.StrictlyEnforceRange
+                    preferredHighlightBegin:    height * 0.4
+                    preferredHighlightEnd:      height * 0.6
+                    highlightMoveDuration:      300
+
+                    delegate: QQC2.Label {
+                        id: line
+                        required property int index
+                        required property var modelData
+                        width:               ListView.view.width
+                        text:                modelData.text
+                        wrapMode:            Text.WordWrap
+                        horizontalAlignment: Text.AlignHCenter
+                        font.bold:           index === root.lyricIndex
+                        opacity:             index === root.lyricIndex ? 1 : 0.5
+                    }
+                }
+
+                QQC2.ScrollView {
+                    anchors.fill:    parent
+                    anchors.margins: Kirigami.Units.smallSpacing
+                    visible:         root.lyricLines.length === 0
+                    contentWidth:    availableWidth
+
+                    QQC2.Label {
+                        width:               parent.width
+                        text:                root.lyrics
+                        wrapMode:            Text.WordWrap
+                        horizontalAlignment: Text.AlignHCenter
+                    }
+                }
+            }
+
+            MouseArea {
+                anchors.fill: parent
+                cursorShape:  Qt.PointingHandCursor
+                onClicked:    root.showLyrics = !root.showLyrics
+            }
+
+            // Sync offset; declared after the MouseArea so it receives clicks.
+            RowLayout {
+                id: offsetBar
+                anchors.bottom:           parent.bottom
+                anchors.horizontalCenter: parent.horizontalCenter
+                visible: root.showLyrics && root.lyricLines.length > 0
+
+                QQC2.ToolButton {
+                    text: "−"
+                    onClicked: root.lyricsOffsetMs -= 500
+                    QQC2.ToolTip.visible: hovered
+                    QQC2.ToolTip.text:    "Lyrics earlier"
+                }
+                QQC2.ToolButton {
+                    flat: true
+                    text: (root.lyricsOffsetMs > 0 ? "+" : root.lyricsOffsetMs < 0 ? "−" : "") +
+                          (Math.abs(root.lyricsOffsetMs) / 1000).toFixed(1) + " s"
+                    onClicked: root.lyricsOffsetMs = 0
+                    QQC2.ToolTip.visible: hovered
+                    QQC2.ToolTip.text:    "Reset"
+                }
+                QQC2.ToolButton {
+                    text: "+"
+                    onClicked: root.lyricsOffsetMs += 500
+                    QQC2.ToolTip.visible: hovered
+                    QQC2.ToolTip.text:    "Lyrics later"
+                }
+            }
         }
 
         // -- Track name --
@@ -613,6 +790,14 @@ PlasmoidItem {
         RowLayout {
             Layout.alignment: Qt.AlignHCenter
             spacing:          Kirigami.Units.largeSpacing
+
+            // Lyrics beside the panel widget
+            QQC2.ToolButton {
+                icon.name: "view-media-lyrics"
+                checkable: true
+                checked:   root.showPanelLyrics
+                onClicked: root.showPanelLyrics = !root.showPanelLyrics
+            }
 
             QQC2.ToolButton {
                 icon.name: "media-skip-backward"
